@@ -1,0 +1,169 @@
+<!doctype html>
+<!-- Example taken from http://www.jspsych.org/tutorials/rt-task/ and adapted for the use with JATOS -->
+<html lang="en">
+
+<head>
+    <title>Final Questionaire</title>
+    <!-- If you use an older version of JATOS (< 3.3.1) you have to use absolutes path for you assets and jatos.js-->
+    <script src="jspsych-6.3.1/jspsych.js"></script>
+    <script src="jspsych-6.3.1/plugins/jspsych-instructions.js"></script>
+    <script src="jspsych-6.3.1/plugins/jspsych-survey-likert.js"></script>
+    <script src="jspsych-6.3.1/plugins/jspsych-survey-text.js"></script>
+    <script src="jspsych-6.3.1/plugins/jspsych-html-button-response.js"></script>
+    <script src="jatos.js"></script>
+    <link rel="stylesheet" type="text/css" href="jspsych-6.3.1/css/jspsych.css">
+    <script src="common_vars.js"></script>
+
+    <!-- below, we prevent scaling and marking -->
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+</head>
+
+<body bgcolor='#666666'>
+<script>
+
+    // salute the hacker
+    console.log("Oh, Oh, Oh, I'm on vacation, every single day ...");
+
+    // create arrays
+    let scale = ["Concentrated", "Somewhat Concentrated", "Neutral", "Somewhat Distracted", "Distracted"];
+    let finger_choice = ['thumb', 'index', 'multiple', 'other'];
+    let fullscreen_responses = ['yes', 'no']
+    let handedness_responses = ['left', 'right', 'alternating']
+    let study_id;
+    let session_number
+
+
+    // check for concentration
+    let focus = {
+        type: 'survey-likert',
+        questions: [
+            {
+                prompt: "<p>You're Done! Please indicate how distracted or concentrated you felt during the experiment.</p>",
+                name: 'control',
+                labels: scale,
+                required: true
+            }
+        ],
+        choices: ['Submit answer'],
+        data: {
+            test_part: 'outro_concentration',
+        },
+        on_finish(data) {
+            data['survey_response'] = scale[parseInt(data.responses[6])];
+        },
+
+    };
+    timeline.push(focus);
+
+    // check which finger was used
+    let finger = {
+        type: 'html-button-response',
+        stimulus: "<p>Which finger did you use to respond?</p>",
+        choices: finger_choice,
+        data: {
+            test_part: 'outro_finger',
+        },
+        on_finish(data) {
+            data['survey_response'] = finger_choice[data.button_pressed];
+        },
+
+    };
+    timeline.push(finger);
+
+    // check if fullscreen mode was used
+    let screen = {
+        type: 'html-button-response',
+        stimulus: "<p>Did your screen switch to fullscreen mode during the main experiment?</p>",
+        choices: fullscreen_responses,
+        data: {
+            test_part: 'outro_screen',
+        },
+        on_finish(data) {
+            data['survey_response'] = fullscreen_responses[data.button_pressed];
+        },
+    };
+    timeline.push(screen);
+
+    // ask for handedness
+    let handedness = {
+        type: 'html-button-response',
+        stimulus: "<p>Which hand did you use make responses?</p>",
+        choices: handedness_responses,
+        data: {
+            test_part: 'outro_hand',
+        },
+        on_finish(data) {
+            data['survey_response'] = handedness_responses[data.button_pressed];
+        },
+    };
+    timeline.push(handedness);
+
+    // check on any other comments
+    let comments = {
+        type: 'survey-text',
+        questions: [
+            {
+                prompt: "Did you notice something during the experiment that you'd like to share?",
+                placeholder: "Type your answer here."
+            },
+        ],
+        data: {
+            test_part: 'outro_comments'
+        },
+        on_finish(data) {
+            data['survey_response'] = data.response['Q0'];
+        },
+    };
+    timeline.push(comments);
+
+    let reward_table = {'1': '<p>In the next session, you can earn 3.34 £ </p>',
+        '2': '<p>In the next session, you can earn 3.84 £ </p>',
+        '3': '<p>In the next session, you can earn 6.48 £</p>',
+        '4': '<p>You have completed the study.</p> '};
+
+    /* define debrief */
+    // end the experiment regularly
+    let debrief_block = {
+        type: "html-button-response",
+        stimulus: function(){return "<p>Thanks for your participation!</p>"+
+        reward_table[session_number]} ,
+        choices: [],
+        button_html: [],
+        trial_duration: 2500,
+        data: {
+            test_part: 'outro_bye',
+        },
+
+    };
+    timeline.push(debrief_block);
+
+
+    /* start the experiment */
+    jatos.onLoad(function () {
+
+        study_id = jatos.urlQueryParameters.STUDY_ID;
+        session_number = jatos.urlQueryParameters.SESSION_NUMBER;
+
+        jsPsych.data.addProperties({
+            subject: jatos.workerId,
+            prolific_id: jatos.urlQueryParameters.PROLIFIC_PID,
+            study_id: study_id,
+            session_number: session_number,
+            session_id: jatos.urlQueryParameters.SESSION_ID,
+            component: 'Outro_General',
+        });
+
+        jsPsych.init({
+            timeline: timeline,
+            fullscreen: true,
+            on_finish: function () {
+                let resultJson = jsPsych.data.get().json();
+                jatos.endStudyAndRedirect(id_redirect_to[session_number], resultJson);
+            },
+        });
+    });
+</script>
+</body>
+
+
+</html>

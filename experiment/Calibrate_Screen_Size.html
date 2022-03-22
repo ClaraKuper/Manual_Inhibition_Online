@@ -1,0 +1,250 @@
+<!doctype html>
+<!-- Calibrate the Screen Size and save the Pixel_to_DVA value in the session data -->
+<!-- Example taken from http://www.jspsych.org/tutorials/rt-task/ and adapted for the use with JATOS -->
+<html lang="en">
+
+<head>
+    <title>Screen Calibration</title>
+    <!-- If you use an older version of JATOS (< 3.3.1) you have to use absolutes path for you assets and jatos.js-->
+    <script src="jspsych-6.3.1/jspsych.js"></script>
+    <script src="jspsych-6.3.1/plugins/jspsych-virtual-chinrest.js"></script>
+    <script src="jspsych-6.3.1/plugins/jspsych-fullscreen.js"></script>
+    <script src="jspsych-6.3.1/plugins/jspsych-html-button-response.js"></script>
+    <script src="jspsych-6.3.1/plugins/jspsych-survey-text.js"></script>
+    <script src="jspsych-6.3.1/plugins/jspsych-survey-multi-choice.js"></script>
+    <script src="jspsych-6.3.1/plugins/jspsych-preload.js"></script>
+    <script src="jspsych-6.3.1/plugins/jspsych-video-keyboard-response.js"></script>
+
+
+
+    <!-- custom scripts -->
+    <script src="common_vars.js"></script>
+    <script src="common_funcs.js"></script>
+    <script src="jatos.js"></script>
+
+    <link href="jspsych-6.3.1/css/jspsych.css" rel="stylesheet" type="text/css"/>
+    <!-- below, we prevent scaling and marking -->
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+    <!-- external script imports -->
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/svg.js/2.6.3/svg.min.js"></script>
+
+</head>
+
+<body bgcolor= '#666666'>
+<script>
+
+    let check_prolific_participant = {
+        type: 'html-button-response',
+        stimulus: "<p>Hi there. How did you get here?</p> " +
+            "<p>Looks like you didn't open this link through prolific. </p>" +
+            "<p>Please contact the experimenter if you have any questions. </p>",
+        choices: [],
+    };
+
+    let check_prolific_node = {
+        timeline: [check_prolific_participant],
+        conditional_function: function(){return jatos.urlQueryParameters.PROLIFIC_PID === undefined}
+    };
+    timeline.push(check_prolific_node);
+
+    let initial_screen_check = {
+        type: 'html-button-response',
+        stimulus: "<p>This experiment has a few basic rules: </p> " +
+            "<div style='text-align: left'> <ol> " +
+            "<li>You need to run it on a device with a touchscreen.</li> " +
+            "<li>The screen must be at least 13 cm wide and 7.5 cm high.</li> " +
+            "<li>Your device must run on android (no apple devices).</li> " +
+            "<li>You need to be in landscape mode.</li> " +
+            "<li>It seems like you don't fullfill these requirements. If you're not in landscape mode, " +
+            "then rotate your phone and load this page again.</li> " +
+            "</ol> " +
+            "</div>",
+        choices: []
+    }
+
+    let screen_entry_check = {
+        timeline: [initial_screen_check],
+        conditional_function: function(){return !check_screen_validity()},
+        loop_function: function(){return !check_screen_validity()},
+    }
+    timeline.push(screen_entry_check);
+
+    let preload = {
+        type: 'preload'
+    };
+    timeline.push(preload);
+
+    let prompt = ''
+    let rule_video = {
+        type: 'video-keyboard-response',
+        stimulus: ['files/introduction_rules.mp4'],
+        trial_ends_after_video: true,
+        response_ends_trial: false,
+        width: window.innerWidth,
+        height: window.innerHeight,
+        controls: true,
+        prompt: function(){return prompt},
+    }
+
+    let show_video = false;
+    let rule_video_node = {
+        timeline: [rule_video],
+        conditional_function: function(){
+            return parseInt(jatos.urlQueryParameters.SESSION_NUMBER) === 1 || show_video}
+    }
+
+    let rule_understanding_passed = false;
+    let check_rule_understanding = {
+        type: 'survey-multi-choice',
+        preamble: '<p> Please answer the following questions to check your understanding of the rules. </a>',
+        questions: [{
+            prompt: "How many sessions does this study have in total?",
+            options: ['1', '2', '3', '4']
+        },{
+            prompt: "Please set your screen to full brightness and turn off notifications now.",
+            options: ["done", "when was that said?"]
+        },
+        ],
+        on_finish: function (data){
+            rule_understanding_passed = data.response['Q0'] === '4' &&
+                data.response['Q1'] === 'done';
+            prompt = '<p> Please watch the introduction again. </p>';
+            show_video = true;
+        }
+    };
+
+    let rule_node = {
+        timeline: [rule_video_node, check_rule_understanding],
+        loop_function: function(){return !rule_understanding_passed}
+    };
+    timeline.push(rule_node);
+
+    let participation_consent = {
+        type: 'survey-multi-choice',
+        preamble: '<p> Please agree to the </p><a target="_blank" href = "files/InformationForm_FastHandMovements_Online2.pdf"> Participant Information and Data Handling statement </a>',
+        questions: [{
+            prompt: "I hereby express my voluntary agreement to participate in the planed study 'Fast hand movements on a touchscreen' and agree that my data is being processed as described in the information form that I received.",
+            options: ['yes', 'no']
+        },{
+            prompt: "I hereby express my voluntary agreement that the anonymized data collected in this study can be made accessible to researchers worldwide through a scientific data archive.",
+            options: ['yes', 'no']
+        }
+        ],
+        on_finish: function(data){
+            consentParticipation = data.response['Q0'] === 'yes';
+            consentProcessing = data.response['Q1'] === 'yes';
+        }
+    };
+
+    let no_consent_page = {
+        type: 'html-button-response',
+        stimulus: '<p>You revoked your consent to participate. ' +
+            'Please return your submission in prolific.</p>',
+        choices: [],
+    }
+
+    let no_consent_node = {
+        timeline: [no_consent_page],
+        conditional_function: function(){return !consentParticipation || !consentProcessing}
+    };
+
+    consent_node = {
+        timeline: [participation_consent, no_consent_node],
+        conditional_function: function(){return parseInt(jatos.urlQueryParameters.SESSION_NUMBER) === 1}
+    }
+    timeline.push(consent_node);
+
+    let calibration_instruction_video = {
+        type: 'video-keyboard-response',
+        stimulus: ['files/explanation_calibration.mp4'],
+        trial_ends_after_video: true,
+        response_ends_trial: false,
+        width: window.innerWidth,
+        height: window.innerHeight,
+        controls: true,
+    }
+
+    let calibration_instruction_node = {
+        timeline: [calibration_instruction_video],
+        conditional_function: function(){return parseInt(jatos.urlQueryParameters.SESSION_NUMBER) === 1}
+    }
+    timeline.push(calibration_instruction_node)
+
+    let confirm_fullscreen = {
+        type: "fullscreen",
+        message: '<p>Please confirm the fullscreen: </p>',
+        fullscreen_mode: true,
+        button_label: 'Fullscreen',
+        data: {
+            test_part: 'fullscreen_request',
+        }
+    };
+    timeline.push(confirm_fullscreen);
+
+    let calibrate_screen_size = {
+        type: "virtual-chinrest",
+        blindspot_reps: 5,
+        resize_units: "none",
+        data: {
+            test_part: 'virtual_chinrest',
+        },
+        on_finish: function (data) {
+            jatos.setStudySessionData(data);
+            calibrationValid = check_calibration_validity(data);
+        }
+    };
+
+    let reinstruct_calibration_screen = {
+        type: 'html-button-response',
+        stimulus: "<p>The calibration failed. This could have several reasons: </p> " +
+            "<div style='text-align: left'> <ol> " +
+            "<li>You are to close or to far away from the screen. Make sure the distance is about a bend armlength.</li> " +
+            "<li>Your screen is too small at the distance from which you are measuring. If that's comfortable, " +
+            "try to sit closer to the screen.</li> " +
+            "<li>Maybe the credit card scaling was off or you tapped to quickly in the blind spot test.</li> " +
+            "<li>If any of this seems reasonable, please repeat the calibration. Otherwise, just close this window " +
+            "and return your submission in prolific.</li> " +
+            "</ol> " +
+            "</div>",
+        choices: ['Calibrate the distance again.'],
+        trial_duration: 18000,
+    }
+
+    let reinstruction_node = {
+        timeline: [reinstruct_calibration_screen],
+        conditional_function: function(){return !calibrationValid}
+    }
+
+    calibration_node = {
+        timeline: [calibrate_screen_size, reinstruction_node],
+        loop_function: function(){return !calibrationValid}
+    }
+    timeline.push(calibration_node);
+
+    /* start the experiment */
+    // call jatos function, we can use jatos code after this line
+    jatos.onLoad(function () {
+        // add general data properties to all fields of this trial
+        jsPsych.data.addProperties({
+            subject: jatos.workerId,
+            prolific_id: jatos.urlQueryParameters.PROLIFIC_PID,
+            study_id: jatos.urlQueryParameters.STUDY_ID,
+            session_id: jatos.urlQueryParameters.SESSION_ID,
+            session_number: jatos.urlQueryParameters.SESSION_NUMBER,
+            component: 'Calibrate_Screen', // the component of the experiment
+        });
+
+        jsPsych.init({
+            timeline: timeline,
+            on_finish: function () {
+                let resultJson = jsPsych.data.get().json();
+                jatos.submitResultData(resultJson, jatos.startNextComponent)
+                    .catch(() => console.log("File upload failed"));
+            }
+        })
+    });
+</script>
+</body>
+
+
+</html>
