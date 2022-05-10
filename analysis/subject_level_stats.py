@@ -1,8 +1,7 @@
 import json
 import math
 import numpy as np
-import pandas as pd
-from helper_funcs import causal_rate, align_to_start
+from helper_funcs import causal_rate, align_to_start, convert_string_to_array
 
 
 class OneSubject:
@@ -44,6 +43,9 @@ class OneSubject:
     def set_trial_data(self, get_first):
         trial_data = self.data[self.data.component == 'Trials_Serial']
         trial_data = trial_data[trial_data.test_part == 'trial']
+        convert_string_to_array(trial_data)
+        # add column with start time
+        trial_data['trialOnTime'] = [trial_data['animation_timestamps_list'][x][0] for x in trial_data.index]
         if not get_first:
             self.unsuccessful_trials = trial_data[trial_data.success == 0].dropna(axis=1)
             self.trial_data = trial_data[trial_data.success == 1].dropna(axis=1)
@@ -89,6 +91,12 @@ class OneSubject:
             print(f"user {self.prolific_id} completed the experiment with {len(unique_height)} different heights")
         self.device_height = unique_height
 
+    def get_trials(self, **kwargs):
+        flash_data = self.data[self.data['flashShown'] == kwargs['flash_condition']]
+        shift_data = flash_data[flash_data['stimJumped'] == kwargs['shift_condition']]
+
+        return shift_data, len(shift_data)
+
     def set_trials_flash_shift(self):
         flash_data = self.trial_data[self.trial_data.flashShown == 1]
         flash_shift_data = flash_data[flash_data.stimJumped == 1]
@@ -131,13 +139,13 @@ class OneSubject:
 
 
 class OneSubjectInhibition(OneSubject):
-    def __init__(self, prolific_id):
+    def __init__(self, prolific_id, **kwargs):
         OneSubject.__init__(self, prolific_id)
         self.alpha = 1 / 50
         self.mask_cutoff = 20
         self.time_window_for_baseline = -100
-        self.window_start = None
-        self.window_end = None
+        self.window_start = kwargs['window_start']
+        self.window_end = kwargs['window_end']
         self.scale = None
         self.baseline = None
         self.onsets_combined = None
@@ -150,6 +158,10 @@ class OneSubjectInhibition(OneSubject):
         self.rates_noflash_noshift = None
         self.rates_flash_noshift = None
         self.rates_noflash_shift = None
+        self.rates_flash_shift_norm = None
+        self.rates_noflash_noshift_norm = None
+        self.rates_flash_noshift_norm = None
+        self.rates_noflash_shift_norm = None
         self.minimum_frequency_flash_shift = None
         self.minimum_frequency_flash_noshift = None
         self.minimum_frequency_noflash_shift = None
@@ -167,24 +179,49 @@ class OneSubjectInhibition(OneSubject):
         self.latency_noflash_shift = None
         self.latency_noflash_noshift = None
 
+    def align_time_to_trial_on(self):
+        start_to_start = align_to_start(self.trial_data, 'trialOnTime', 'startTime')
+        align_to_start(start_to_start, 'trialOnTime_to_startTime', 'flashOnTime')
+        end_to_start = align_to_start(self.trial_data, 'endTime', 'trialOnTime')
+        align_to_start(end_to_start, 'endTime_to_trialOnTime', 'flashOnTime')
+
     def set_window_scale(self):
-        start_to_start = align_to_start(self.trial_data, 'startTime', 'startTime')
-        start_to_flash = align_to_start(start_to_start, 'startTime_to_startTime', 'flashOnTime')
-        end_to_start = align_to_start(self.trial_data, 'endTime', 'startTime')
-        end_to_flash = align_to_start(end_to_start, 'endTime_to_startTime', 'flashOnTime')
-        self.window_start = math.ceil(abs(min(start_to_flash.startTime_to_startTime_to_flashOnTime.values)))
-        self.window_end = math.ceil(abs(max(end_to_flash.endTime_to_startTime_to_flashOnTime.values)))
+
+        assert_condition(self.trial_data.trialOnTime_to_startTime_to_flashOnTime, self.align_time_to_trial_on)
+
+        if not self.window_start:
+            self.window_start = min(
+                [500,
+                 math.ceil(
+                     abs(
+                         min(
+                             self.trial_data.trialOnTime_to_startTime_to_flashOnTime.values
+                         )
+                     )
+                 )
+                 ]
+            )
+            self.window_end = min(
+                [1500,
+                 math.ceil(
+                     abs(
+                         max(
+                             self.trial_data.endTime_to_trialOnTime_to_flashOnTime.values
+                         )
+                     )
+                 )]
+            )
+
         self.scale = np.arange(-1 * self.window_start, self.window_end, 1)
 
     def get_trials_per_window(self, data):
-        start_to_start = align_to_start(data, 'startTime', 'startTime')
-        start_to_flash = align_to_start(start_to_start, 'startTime_to_startTime', 'flashOnTime')
-        end_to_start = align_to_start(data, 'endTime', 'startTime')
-        end_to_flash = align_to_start(end_to_start, 'endTime_to_startTime', 'flashOnTime')
+
+        assert_condition(self.trial_data.trialOnTime_to_startTime_to_flashOnTime, self.align_time_to_trial_on)
+
         trial_windows = []
         for i in data.index:
-            trial_scale = np.arange(round(start_to_flash.startTime_to_startTime_to_flashOnTime[i][0]),
-                                    round(end_to_flash.endTime_to_startTime_to_flashOnTime[i][0]), 1)
+            trial_scale = np.arange(round(self.trial_data.trialOnTime_to_startTime_to_flashOnTime[i][0]),
+                                    round(self.trial_data.endTime_to_trialOnTime_to_flashOnTime[i][0]), 1)
             trial_windows.append(trial_scale)
         trial_windows = np.concatenate(trial_windows).flatten()
         distribution, scale = np.histogram(trial_windows, bins=np.append(self.scale, self.scale[-1] + 1))
@@ -265,11 +302,16 @@ class OneSubjectInhibition(OneSubject):
         onset_list = np.concatenate(onset_to_flash.touchOn_to_startTime_to_flashOnTime.values).flatten()
         self.onsets_combined = onset_list
 
-    def compute_rate_combined(self):
+    def compute_rate_combined(self, normalize=True):
+        self.n_trials_combined = self.get_trials_per_window(self.trial_data)
+        if normalize:
+            n_trials = self.n_trials_combined
+        else:
+            n_trials = len(self.trial_data)
         self.n_trials_total = self.get_trials_per_window(self.trial_data)
         rate, scale = causal_rate(self.onsets_combined, self.window_start, self.window_end,
-                                  self.n_trials_total, alpha=self.alpha)
-        rate = np.multiply(rate, np.array(self.n_trials_total) > self.mask_cutoff)
+                                  n_trials, alpha=self.alpha)
+        rate = np.multiply(rate, np.array(self.n_trials_combined) > self.mask_cutoff)
         self.rates_combined = rate
 
     def compute_baseline(self):
@@ -287,30 +329,36 @@ class OneSubjectInhibition(OneSubject):
 
     def compute_all_rates(self, normalize=True):
         self.set_window_scale()
-        self.compute_rate_combined()
+        self.compute_rate_combined(normalize)
         self.compute_rate_flash_shift(normalize)
         self.compute_rate_flash_noshift(normalize)
         self.compute_rate_noflash_shift(normalize)
         self.compute_rate_noflash_noshift(normalize)
 
-    def normalize_rates(self):
+    def normalize_rates_to_baseline(self):
         self.compute_baseline()
-        self.rates_flash_shift = self.rates_flash_shift / self.baseline
-        self.rates_flash_noshift = self.rates_flash_noshift / self.baseline
-        self.rates_noflash_shift = self.rates_noflash_shift / self.baseline
-        self.rates_noflash_noshift = self.rates_noflash_noshift / self.baseline
+        self.rates_flash_shift_norm = self.rates_flash_shift / self.baseline
+        self.rates_flash_noshift_norm = self.rates_flash_noshift / self.baseline
+        self.rates_noflash_shift_norm = self.rates_noflash_shift / self.baseline
+        self.rates_noflash_noshift_norm = self.rates_noflash_noshift / self.baseline
+
+    def normalize_rates_to_null_condition(self):
+        self.rates_flash_shift_norm = self.rates_flash_shift[500:2000] / self.rates_noflash_noshift[500:2000]
+        self.rates_flash_noshift_norm = self.rates_flash_noshift[500:2000] / self.rates_noflash_noshift[500:2000]
+        self.rates_noflash_shift_norm = self.rates_noflash_shift[500:2000] / self.rates_noflash_noshift[500:2000]
+        self.rates_noflash_noshift_norm = self.rates_noflash_noshift[500:2000] / self.rates_noflash_noshift[500:2000]
 
     def get_minimum(self):
         indexes_1 = np.where(self.scale > 0)
         indexes_2 = np.where(np.array(self.n_trials_flash_shift) > self.mask_cutoff)
-        self.minimum_frequency_flash_shift = np.min(self.rates_flash_shift[np.intersect1d(indexes_1, indexes_2)])
+        self.minimum_frequency_flash_shift = np.min(self.rates_flash_shift_norm[np.intersect1d(indexes_1, indexes_2)])
         indexes_2 = np.where(np.array(self.n_trials_flash_noshift) > self.mask_cutoff)
-        self.minimum_frequency_flash_noshift = np.min(self.rates_flash_noshift[np.intersect1d(indexes_1, indexes_2)])
+        self.minimum_frequency_flash_noshift = np.min(self.rates_flash_noshift_norm[np.intersect1d(indexes_1, indexes_2)])
         indexes_2 = np.where(np.array(self.n_trials_noflash_shift) > self.mask_cutoff)
-        self.minimum_frequency_noflash_shift = np.min(self.rates_noflash_shift[np.intersect1d(indexes_1, indexes_2)])
+        self.minimum_frequency_noflash_shift = np.min(self.rates_noflash_shift_norm[np.intersect1d(indexes_1, indexes_2)])
         indexes_2 = np.where(np.array(self.n_trials_noflash_noshift) > self.mask_cutoff)
         self.minimum_frequency_noflash_noshift = np.min(
-            self.rates_noflash_noshift[np.intersect1d(indexes_1, indexes_2)])
+            self.rates_noflash_noshift_norm[np.intersect1d(indexes_1, indexes_2)])
 
     def get_magnitude(self):
         self.magnitude_flash_shift = abs(1 - self.minimum_frequency_flash_shift)
@@ -321,25 +369,25 @@ class OneSubjectInhibition(OneSubject):
     def get_bottom_of_dip(self):
         """bottom of the dip was defined as the period at which microsaccade frequency was below the
         minimum plus 10 % of the difference between 1(the baseline) and the minimum frequency"""
-        bottom_flash_shift = np.where(self.rates_flash_shift < self.minimum_frequency_flash_shift + 0.1)
-        self.bottom_flash_shift = np.intersect1d(bottom_flash_shift, np.where(self.rates_flash_shift > 0))
-        bottom_flash_noshift = np.where(self.rates_flash_noshift < self.minimum_frequency_flash_noshift + 0.1)
-        self.bottom_flash_noshift = np.intersect1d(bottom_flash_noshift, np.where(self.rates_flash_noshift > 0))
-        bottom_noflash_shift = np.where(self.rates_noflash_shift < self.minimum_frequency_noflash_shift + 0.1)
-        self.bottom_noflash_shift = np.intersect1d(bottom_noflash_shift, np.where(self.rates_noflash_shift > 0))
-        bottom_noflash_noshift = np.where(self.rates_noflash_noshift < self.minimum_frequency_noflash_noshift + 0.1)
-        self.bottom_noflash_noshift = np.intersect1d(bottom_noflash_noshift, np.where(self.rates_noflash_noshift > 0))
+        bottom_flash_shift = np.where(self.rates_flash_shift_norm < self.minimum_frequency_flash_shift + 0.1)
+        self.bottom_flash_shift = np.intersect1d(bottom_flash_shift, np.where(self.rates_flash_shift_norm > 0))
+        bottom_flash_noshift = np.where(self.rates_flash_noshift_norm < self.minimum_frequency_flash_noshift + 0.1)
+        self.bottom_flash_noshift = np.intersect1d(bottom_flash_noshift, np.where(self.rates_flash_noshift_norm > 0))
+        bottom_noflash_shift = np.where(self.rates_noflash_shift_norm < self.minimum_frequency_noflash_shift + 0.1)
+        self.bottom_noflash_shift = np.intersect1d(bottom_noflash_shift, np.where(self.rates_noflash_shift_norm > 0))
+        bottom_noflash_noshift = np.where(self.rates_noflash_noshift_norm < self.minimum_frequency_noflash_noshift + 0.1)
+        self.bottom_noflash_noshift = np.intersect1d(bottom_noflash_noshift, np.where(self.rates_noflash_noshift_norm > 0))
 
     def get_latency(self):
         """latency is the time point of the minimum - change this later!"""
         self.latency_flash_shift = self.scale[np.where(
-            self.rates_flash_shift == self.minimum_frequency_flash_shift)]
+            self.rates_flash_shift_norm == self.minimum_frequency_flash_shift)]
         self.latency_flash_noshift = self.scale[np.where(
-            self.rates_flash_noshift == self.minimum_frequency_flash_noshift)]
+            self.rates_flash_noshift_norm == self.minimum_frequency_flash_noshift)]
         self.latency_noflash_shift = self.scale[np.where(
-            self.rates_noflash_shift == self.minimum_frequency_noflash_shift)]
+            self.rates_noflash_shift_norm == self.minimum_frequency_noflash_shift)]
         self.latency_noflash_noshift = self.scale[np.where(
-            self.rates_noflash_noshift == self.minimum_frequency_noflash_noshift)]
+            self.rates_noflash_noshift_norm == self.minimum_frequency_noflash_noshift)]
 
     def compute_metrics(self):
         self.get_minimum()
@@ -425,3 +473,11 @@ class OneSubjectErrorSize(OneSubject):
         ) for i in np.arange(-500, 1000, 1)]
 
         return distance_original_smooth, distance_shifted_smooth, np.arange(-500, 1000, 1)
+
+
+def assert_condition(condition, function):
+    try:
+        assert condition
+    except AssertionError:
+        print(f'Assertion check failed. Executing alternative function instead.')
+        function()
