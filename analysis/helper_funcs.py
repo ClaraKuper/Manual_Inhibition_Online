@@ -13,17 +13,11 @@ def clean_dataframe(data):
     return data
 
 
-def align_to_start(data, column, start_column):
+def align_times(data, column, start_column):
     data = data.copy()
     aligned_list = []
     colname = "{}_to_{}".format(column, start_column)
-    #     try:
-    #         data[{f'json_{column}'}] = json.loads(data[column])
-    #         data[{f'json_{start_column}'}] = json.loads(data[start_column])
-    #         column = f'json_{column}'
-    #         start_column = f'json_{start_column}'
-    #     except Exception as e:
-    #         print(e)
+
     for idx in data.index:
         try:
             aligned_values = data.loc[idx, column] - data.loc[idx, start_column]
@@ -83,7 +77,8 @@ def causal_rate(move_onset, lock_window_start, lock_window_end, n_trials, alpha=
     if type(n_trials) == int:
         n_trials = np.linspace(n_trials, n_trials, len(scale))
     elif len(n_trials) != len(scale):
-        raise ValueError('n_trials must have the same as the length of -lock_window_start:lock_window_end!')
+        raise ValueError('n_trials must have the same as the length of -lock_window_start:lock_window_end!'
+                         f'But has length {len(n_trials)} instead of {len(scale)}')
     # alpha defines how much the distribution is shifted
     alpha = alpha
     # define empty arrays for scale and rate
@@ -104,22 +99,22 @@ def causal_rate(move_onset, lock_window_start, lock_window_end, n_trials, alpha=
     return rate, scale
 
 
+def load_strings(col, index, dtype):
+    collected_array = np.array([json.loads(col[x]) for x in index], copy=False, dtype=dtype)
+    if dtype == object:
+        try:
+            collected_array = [x.tolist() for x in collected_array]
+        except AttributeError:
+            pass
+    return collected_array
+
+
 def convert_string_to_array(trial_data):
     """
     Interative and hard-coded translation of string-based columns to numpy arrays
     :param trial_data: the trial data frame from my manual inhibition experiment
     :return: None
     """
-
-    def load_strings(col, index, dtype):
-        collected_array = np.array([json.loads(col[x]) for x in index], copy=False, dtype=dtype)
-        if dtype == object:
-            try:
-                collected_array = [x.tolist() for x in collected_array]
-            except AttributeError:
-                pass
-        return collected_array
-
     trial_data['animation_timestamps_list'] = load_strings(trial_data.animation_timestamps, trial_data.index, object)
     trial_data['touchOn_list'] = load_strings(trial_data.touchOn, trial_data.index, object)
     trial_data['touchOff_list'] = load_strings(trial_data.touchOff, trial_data.index, object)
@@ -160,15 +155,21 @@ def get_position_at_response_time(data, start_position_col, shift_position_col, 
     pos_at_touch = []
 
     for idx in data.index:
-        pos_before = data[start_position_col][idx]
-        pos_after = data[shift_position_col][idx]
         touch_on = data[response_time_col][idx]
         change_on = data[change_time_col][idx]
+        pos_before = data[start_position_col][idx]
+        pos_after = data[shift_position_col][idx]
+        if len(touch_on) < len(pos_before):
+            # not enough touches
+            pos_before = pos_before[:len(touch_on)]
+            pos_after = pos_after[:len(touch_on)]
+        elif len(touch_on) > len(pos_before):
+            # too many touches
+            touch_on = touch_on[:len(pos_before)]
 
         mask_before = touch_on <= change_on
-
         masked_positions_before = np.array(pos_before)[mask_before]
-        masked_positions_after = np.array(pos_after)[not mask_before]
+        masked_positions_after = np.array(pos_after)[np.where(mask_before == False)]
         masked_positions = np.concatenate([masked_positions_before, masked_positions_after])
 
         pos_at_touch.append(masked_positions.tolist())
@@ -176,16 +177,73 @@ def get_position_at_response_time(data, start_position_col, shift_position_col, 
     return pos_at_touch
 
 
+def subtract_arrays_missing_values(array_a, array_b):
+    try:
+        result = array_a - array_b
+    except ValueError:
+        if len(array_a) > len(array_b):
+            result = array_a[:len(array_b)] - array_b
+        else:
+            result = array_a - array_b[:len(array_a)]
+    return result
+
+
+def compute_distance_pythagoras(x1, x2, y1, y2):
+    x_val = x1 - x2
+    y_val = y1 - y2
+
+    return pythagoras(x_val, y_val)
+
+
+def pythagoras(x_value, y_value):
+    """
+    takes two values and computes the hypothenuse between them
+    """
+    return np.sqrt(x_value**2 + y_value**2)
+
+
 def cart2pol(x, y):
     radius = np.sqrt(x**2 + y**2)
     theta_rad = np.arctan2(y, x)
     if theta_rad < 0:
         theta_rad += 2 * np.pi
-    theta_deg = theta_rad * (180/np.pi)
-    return radius, theta_rad, theta_deg
+    theta_dva = theta_rad * (180/np.pi)
+    return radius, theta_rad, theta_dva
 
 
 def pol2cart(radius, theta):
     x = radius * np.cos(theta)
     y = radius * np.sin(theta)
     return x, y
+
+
+def get_angles_from_list(x_distance, y_distance):
+    return [cart2pol(x_distance[x], y_distance[x])[2] for x in range(len(x_distance))]
+
+
+def calibration_valid(params):
+    return params.win_width_deg >= 17 and 200 <= params.view_dist_mm <= 600
+
+
+def get_long_column(data, col_name):
+    wide_format = pd.DataFrame(data[col_name].values.tolist())
+    long_format = wide_format.stack()
+
+    return long_format.reset_index()[0].values
+
+
+def stack_unique_cols(data, col_name, n_stack):
+    stack_df = pd.DataFrame()
+
+    for s in range(n_stack):
+        stack_df[s] = data[col_name]
+
+    return stack_df.stack().reset_index()[0].values
+
+
+def smooth_array(array, time_array, smooth_before, smooth_after, time):
+    start = time - smooth_before
+    end = time + smooth_after
+    idx_1 = np.where(time_array >= start)
+    idx_2 = np.where(time_array < end)
+    return np.mean(array[np.intersect1d(idx_1, idx_2)])
